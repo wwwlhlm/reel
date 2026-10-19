@@ -396,6 +396,7 @@ PAGE = r"""<!doctype html>
   --bg:#141414; --fg:#e8e8e5; --muted:#8c8c88; --line:#2a2a29; --soft:#1c1c1b;
   --tag:#8fc4a1; --danger:#f08a80; --tile:#222221; color-scheme:dark}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--fg);font:var(--m)/1.45 var(--sans);padding:0 max(16px,env(safe-area-inset-left)) 64px}
 button,input,textarea,select{font:inherit;color:inherit}
 button{cursor:pointer}
