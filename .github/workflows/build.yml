@@ -1,0 +1,52 @@
+name: Mac-App bauen
+
+on:
+  push:
+    branches: [main]
+    paths: ["app.py", "reel.spec", "requirements.txt", ".github/workflows/build.yml"]
+  workflow_dispatch:          # manuell: Actions → "Mac-App bauen" → Run workflow
+  schedule:
+    - cron: "17 4 1 * *"      # jeden Monatsersten neu bauen, mit aktuellem yt-dlp
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest     # Apple Silicon (M1 und neuer)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: App bauen
+        run: pyinstaller --noconfirm reel.spec
+
+      - name: Kurztest
+        run: |
+          ./dist/Reel.app/Contents/MacOS/Reel &
+          sleep 8
+          curl -sf http://localhost:5055/api/library
+          curl -sf -X POST http://localhost:5055/api/quit
+
+      - name: Zippen
+        run: |
+          cd dist
+          ditto -c -k --keepParent Reel.app Reel-mac.zip
+
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(date +%Y.%m.%d-%H%M)"
+          YTDLP=$(python -c "import yt_dlp.version as v; print(v.__version__)")
+          gh release create "$TAG" dist/Reel-mac.zip \
+            --title "Reel $TAG" \
+            --notes "Mit yt-dlp $YTDLP. Herunterladen: Reel-mac.zip unten bei Assets."
