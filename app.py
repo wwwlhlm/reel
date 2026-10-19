@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 from pathlib import Path
@@ -173,12 +174,12 @@ def run_job(job_id: str, url: str, category: str, note: str):
                 saved += 1
         if saved == 0:
             raise RuntimeError("Kein Video im Beitrag gefunden (nur Bilder?).")
-        update(status="fertig", detail=f"{saved} Video(s) in «{target.name}»")
+        update(status="fertig", detail=f"{saved} Video(s) in «{target.name}»", done=time.time())
     except Exception as ex:
         msg = str(ex).splitlines()[0][:220]
         if "login" in msg.lower() or "cookie" in msg.lower():
             msg += " – Tipp: unten bei «Login über Browser» deinen Browser wählen."
-        update(status="fehler", detail=msg)
+        update(status="fehler", detail=msg, done=time.time())
 
 
 # ---------------------------------------------------------------------- API
@@ -222,8 +223,42 @@ def api_download():
 
 @app.get("/api/jobs")
 def api_jobs():
+    now = time.time()
+    keep = {"fertig": 5, "fehler": 15}     # Sekunden, wie lange eine Meldung sichtbar bleibt
     with jobs_lock:
-        return jsonify(list(jobs.values())[-30:])
+        visible = [j for j in jobs.values()
+                   if "done" not in j or now - j["done"] < keep.get(j["status"], 5)]
+        return jsonify(visible[-30:])
+
+
+def trash(path: Path):
+    """In den Mac-Papierkorb legen; geht das nicht, in .papierkorb in der Ablage."""
+    bins = [Path.home() / ".Trash", lib() / ".papierkorb"]
+    for b in bins:
+        try:
+            b.mkdir(exist_ok=True)
+            dest = b / path.name
+            n = 1
+            while dest.exists():
+                dest = b / f"{path.stem} {n}{path.suffix}"
+                n += 1
+            shutil.move(str(path), dest)
+            return
+        except OSError:
+            continue
+    raise OSError("Konnte nicht löschen")
+
+
+@app.post("/api/delete")
+def api_delete():
+    video = resolve(request.get_json(force=True)["path"])
+    if video.suffix.lower() not in VIDEO_EXT or not video.is_file():
+        abort(400)
+    side = sidecar(video)
+    trash(video)
+    if side.exists():
+        trash(side)
+    return jsonify(ok=True)
 
 
 @app.post("/api/move")
@@ -318,7 +353,8 @@ textarea,input,select{width:100%;background:var(--card);border:1px solid var(--l
 textarea{min-height:42px;height:42px;resize:vertical}
 button.go{background:var(--accent);color:var(--bg);border:0;border-radius:6px;padding:10px 18px;cursor:pointer;font-weight:600}
 #jobs{list-style:none;margin:0 0 28px;padding:0;font-size:13px;color:var(--muted)}
-#jobs li{padding:3px 0;display:flex;gap:10px}
+#jobs li{padding:3px 0;display:flex;gap:10px;animation:in .2s ease-out}
+@keyframes in{from{opacity:0;transform:translateY(-3px)}}
 #jobs .fertig b{color:var(--ok)} #jobs .fehler b{color:var(--err)}
 #jobs span.u{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40ch}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-top:1px solid var(--line);padding-top:18px;margin-bottom:18px}
@@ -336,6 +372,7 @@ video{width:100%;aspect-ratio:9/16;object-fit:cover;background:#000;display:bloc
 .cap.open{-webkit-line-clamp:unset}
 .row{display:flex;gap:6px} .row select{flex:1;padding:6px 8px} .row button{background:none;border:1px solid var(--line);border-radius:6px;padding:0 10px;cursor:pointer}
 .note{padding:6px 8px}
+.row button.del:hover{color:var(--err);border-color:var(--err)}
 .empty{color:var(--muted)}
 header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:24px}
 header h1{margin:0}
@@ -371,7 +408,7 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const enc=p=>p.split('/').map(encodeURIComponent).join('/');
 const post=(u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
-let lib={categories:[],videos:[]},filter='Alle',q='',poll=null;
+let lib={categories:[],videos:[]},filter='Alle',q='',poll=null;const seen=new Set();
 
 async function load(){lib=await (await fetch('/api/library')).json();render()}
 function render(){
@@ -388,7 +425,7 @@ function render(){
       ${v.caption?`<p class="cap">${esc(v.caption)}</p>`:''}
       <input class="note" placeholder="Notiz, z. B. 3 × 12, Fokus Hüfte" value="${esc(v.note)}">
       <div class="row"><select class="move">${lib.categories.map(c=>`<option ${c===v.category?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new">+ Neue Kategorie …</option></select>
-      <button class="reveal" title="Im Ordner zeigen">↗</button></div>
+      <button class="reveal" title="Im Ordner zeigen">↗</button><button class="del" title="Löschen">Löschen</button></div>
     </div></article>`).join('')||'<p class="empty">Noch keine Videos in dieser Ansicht.</p>';
 }
 $('#chips').onclick=e=>{const b=e.target.closest('.chip');if(b){filter=b.dataset.c;render()}};
@@ -396,6 +433,12 @@ $('#q').oninput=e=>{q=e.target.value.toLowerCase();render()};
 $('#grid').addEventListener('click',e=>{
   if(e.target.classList.contains('cap'))e.target.classList.toggle('open');
   if(e.target.classList.contains('reveal'))post('/api/reveal',{path:e.target.closest('article').dataset.p});
+  if(e.target.classList.contains('del')){
+    const a=e.target.closest('article');
+    if(confirm('Dieses Video löschen? Es landet im Papierkorb.')){
+      post('/api/delete',{path:a.dataset.p}).then(r=>{if(r.ok){a.remove();load()}else alert('Löschen hat nicht geklappt.')});
+    }
+  }
 });
 $('#grid').addEventListener('change',async e=>{
   const p=e.target.closest('article')?.dataset.p;if(!p)return;
@@ -415,7 +458,12 @@ $('#f').onsubmit=async e=>{
 function startPoll(){if(poll)return;poll=setInterval(async()=>{
   const js=await (await fetch('/api/jobs')).json();
   $('#jobs').innerHTML=js.slice().reverse().map(j=>`<li class="${j.status}"><b>${j.status}</b><span class="u">${esc(j.url)}</span><span>${esc(j.detail)}</span></li>`).join('');
-  if(!js.some(j=>j.status==='läuft'||j.status==='wartet')){clearInterval(poll);poll=null;load()}
+  const busy=js.some(j=>j.status==='läuft'||j.status==='wartet');
+  // Galerie nur einmal pro neu fertigem Download neu laden (sonst stoppen laufende Videos)
+  const fresh=js.filter(j=>j.status==='fertig'&&!seen.has(j.id));
+  fresh.forEach(j=>seen.add(j.id));
+  if(fresh.length)load();
+  if(!js.length&&!busy){clearInterval(poll);poll=null}
 },1200)}
 const short=p=>p.replace(/^\/Users\/[^/]+/,'~');
 fetch('/api/settings').then(r=>r.json()).then(s=>{
