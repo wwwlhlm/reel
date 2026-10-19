@@ -29,6 +29,14 @@ jobs:
       - name: App bauen
         run: pyinstaller --noconfirm reel.spec
 
+      # Ganze App neu (ad hoc) signieren – ohne gültige Signatur meldet macOS
+      # «beschädigt» statt «Trotzdem öffnen» anzubieten
+      - name: Signieren und prüfen
+        run: |
+          xattr -cr dist/Reel.app
+          codesign --force --deep --sign - --timestamp=none dist/Reel.app
+          codesign --verify --deep --strict --verbose=2 dist/Reel.app
+
       - name: Kurztest
         run: |
           ./dist/Reel.app/Contents/MacOS/Reel &

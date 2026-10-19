@@ -20,16 +20,22 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-LIBRARY = Path.home() / "Sportuebungen"   # Hauptordner der Ablage
+DEFAULT_LIBRARY = Path.home() / "Sportuebungen"   # Standard-Ablage, in der App änderbar
 PORT = 5055
 URL = f"http://localhost:{PORT}"
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v"}
-SETTINGS_FILE = LIBRARY / ".reel-einstellungen.json"
-LIBRARY.mkdir(parents=True, exist_ok=True)
+
+# Einstellungen und Log liegen unabhängig vom gewählten Ablage-Ordner
+if platform.system() == "Darwin":
+    APP_DIR = Path.home() / "Library" / "Application Support" / "Reel"
+else:
+    APP_DIR = Path.home() / ".reel"
+APP_DIR.mkdir(parents=True, exist_ok=True)
+SETTINGS_FILE = APP_DIR / "einstellungen.json"
 
 # Als App ohne Konsole gibt es kein stdout/stderr – Ausgaben in eine Logdatei
 if sys.stdout is None or sys.stderr is None or getattr(sys, "frozen", False):
-    _log = open(LIBRARY / ".reel.log", "a", buffering=1, encoding="utf-8")
+    _log = open(APP_DIR / "reel.log", "a", buffering=1, encoding="utf-8")
     sys.stdout = sys.stderr = _log
 
 
@@ -64,11 +70,32 @@ def load_settings() -> dict:
     try:
         return json.loads(SETTINGS_FILE.read_text("utf-8"))
     except Exception:
-        return {"cookies_browser": ""}
+        return {}
 
 
 def save_settings(s: dict):
-    SETTINGS_FILE.write_text(json.dumps(s, indent=2), "utf-8")
+    SETTINGS_FILE.write_text(json.dumps(s, indent=2, ensure_ascii=False), "utf-8")
+
+
+def lib() -> Path:
+    """Aktueller Ablage-Ordner (aus den Einstellungen, sonst Standard)."""
+    p = Path(load_settings().get("library") or DEFAULT_LIBRARY).expanduser()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def choose_folder():
+    """Öffnet den normalen Mac-Dialog «Ordner wählen». Gibt Pfad oder None zurück."""
+    if platform.system() != "Darwin":
+        return None
+    script = ('POSIX path of (choose folder with prompt "Ordner für deine Videos wählen" '
+              f'default location (POSIX file "{lib()}"))')
+    # «activate» holt den Dialog nach vorne, ohne zusätzliche Berechtigung
+    r = subprocess.run(["osascript", "-e", "activate", "-e", script],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None          # abgebrochen
+    return r.stdout.strip().rstrip("/") or None
 
 
 def safe_name(name: str) -> str:
@@ -77,8 +104,9 @@ def safe_name(name: str) -> str:
 
 
 def resolve(rel: str) -> Path:
-    p = (LIBRARY / rel).resolve()
-    if LIBRARY.resolve() not in p.parents:
+    root = lib().resolve()
+    p = (root / rel).resolve()
+    if root not in p.parents:
         abort(400)
     return p
 
@@ -104,7 +132,7 @@ def run_job(job_id: str, url: str, category: str, note: str):
         with jobs_lock:
             jobs[job_id].update(kw)
 
-    target = LIBRARY / safe_name(category)
+    target = lib() / safe_name(category)
     target.mkdir(parents=True, exist_ok=True)
     opts = {
         "outtmpl": str(target / "%(upload_date)s_%(uploader_id)s_%(id)s.%(ext)s"),
@@ -156,9 +184,9 @@ def run_job(job_id: str, url: str, category: str, note: str):
 # ---------------------------------------------------------------------- API
 @app.get("/api/library")
 def api_library():
-    LIBRARY.mkdir(parents=True, exist_ok=True)
+    root = lib()
     cats, videos = [], []
-    for d in sorted(p for p in LIBRARY.iterdir() if p.is_dir() and not p.name.startswith(".")):
+    for d in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
         cats.append(d.name)
         for f in d.iterdir():
             if f.suffix.lower() in VIDEO_EXT:
@@ -202,7 +230,7 @@ def api_jobs():
 def api_move():
     data = request.get_json(force=True)
     src = resolve(data["path"])
-    dest_dir = LIBRARY / safe_name(data["category"])
+    dest_dir = lib() / safe_name(data["category"])
     dest_dir.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), dest_dir / src.name)
     if sidecar(src).exists():
@@ -236,10 +264,24 @@ def api_reveal():
 def api_settings():
     if request.method == "POST":
         s = load_settings()
-        b = request.get_json(force=True).get("cookies_browser", "")
-        s["cookies_browser"] = b if b in ("", "safari", "chrome", "firefox", "edge", "brave") else ""
+        data = request.get_json(force=True)
+        if "cookies_browser" in data:
+            b = data["cookies_browser"]
+            s["cookies_browser"] = b if b in ("", "safari", "chrome", "firefox", "edge", "brave") else ""
         save_settings(s)
-    return jsonify(load_settings())
+    s = load_settings()
+    return jsonify(cookies_browser=s.get("cookies_browser", ""), library=str(lib()),
+                   can_choose=platform.system() == "Darwin")
+
+
+@app.post("/api/choose-folder")
+def api_choose_folder():
+    path = choose_folder()
+    if path:
+        s = load_settings()
+        s["library"] = path
+        save_settings(s)
+    return jsonify(library=str(lib()), changed=bool(path))
 
 
 @app.post("/api/quit")
@@ -321,7 +363,7 @@ footer select{width:auto;padding:4px 8px}
       <option value="firefox">Firefox</option><option value="edge">Edge</option><option value="brave">Brave</option>
     </select></label>
   <span>Nur nötig, wenn Downloads mit Login-Fehler scheitern. Du musst in diesem Browser bei Instagram eingeloggt sein.</span>
-  <span>Ablage: ~/Sportuebungen</span>
+  <span>Ablage: <b id="libpath">…</b> <button class="quit" id="choose" type="button">Ordner wählen …</button></span>
 </footer>
 </main>
 <script>
@@ -375,7 +417,18 @@ function startPoll(){if(poll)return;poll=setInterval(async()=>{
   $('#jobs').innerHTML=js.slice().reverse().map(j=>`<li class="${j.status}"><b>${j.status}</b><span class="u">${esc(j.url)}</span><span>${esc(j.detail)}</span></li>`).join('');
   if(!js.some(j=>j.status==='läuft'||j.status==='wartet')){clearInterval(poll);poll=null;load()}
 },1200)}
-fetch('/api/settings').then(r=>r.json()).then(s=>$('#cookies').value=s.cookies_browser||'');
+const short=p=>p.replace(/^\/Users\/[^/]+/,'~');
+fetch('/api/settings').then(r=>r.json()).then(s=>{
+  $('#cookies').value=s.cookies_browser||'';$('#libpath').textContent=short(s.library);
+  if(!s.can_choose)$('#choose').hidden=true;
+});
+$('#choose').onclick=async()=>{
+  $('#choose').textContent='Dialog ist offen …';
+  const r=await (await post('/api/choose-folder',{})).json();
+  $('#choose').textContent='Ordner wählen …';
+  $('#libpath').textContent=short(r.library);
+  if(r.changed){filter='Alle';load()}
+};
 $('#cookies').onchange=e=>post('/api/settings',{cookies_browser:e.target.value});
 $('#quit').onclick=async()=>{await post('/api/quit',{});document.body.innerHTML='<p class="bye">Reel ist beendet. Du kannst diesen Tab schliessen.</p>'};
 load();
@@ -383,6 +436,6 @@ load();
 
 
 if __name__ == "__main__":
-    print(f"{datetime.datetime.now():%Y-%m-%d %H:%M} Reel läuft: {URL} – Ordner: {LIBRARY}, ffmpeg: {FFMPEG}")
+    print(f"{datetime.datetime.now():%Y-%m-%d %H:%M} Reel läuft: {URL} – Ordner: {lib()}, ffmpeg: {FFMPEG}")
     threading.Timer(1.0, lambda: webbrowser.open(URL)).start()
     app.run(host="127.0.0.1", port=PORT, debug=False, use_reloader=False)
