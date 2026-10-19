@@ -15,16 +15,14 @@ Läuft auf Macs mit Apple-Chip (M1 und neuer).
 
 Reel öffnen – die Oberfläche erscheint im Browser unter http://localhost:5055. Die App hat kein Dock-Symbol. Öffnest du sie nochmals, kommt einfach wieder der Tab.
 
-- **Links einfügen** – mehrere gleichzeitig möglich, einer pro Zeile
-- **Kategorie** – bestehende wählen oder neue eintippen, sie wird als Ordner angelegt
-- **Notiz** – z. B. Sätze und Wiederholungen, später in der Galerie änderbar
-- **Umsortieren** – das Dropdown unter dem Video verschiebt die Datei samt Notiz
-- **↗** – zeigt die Datei im Finder
+- **Hinzufügen** – Instagram-Link(s) einfügen, Tags dazu (Enter oder Komma trennt), «Hinzufügen»
+- **Filtern** – oben auf Tags klicken; mehrere Tags zeigen nur Videos, die alle davon haben
+- **Blockansicht** – Klick auf ein Video: gross abspielen, Tags und Notiz ändern, im Finder zeigen, löschen (landet im Papierkorb)
 - **Beenden** – oben rechts
 
-Der Ablage-Ordner ist zuerst `~/Sportuebungen`. Unten auf der Seite lässt er sich mit **«Ordner wählen …»** ändern, z. B. auf einen Ordner in iCloud Drive oder auf einer externen Festplatte. Unterordner darin werden zu Kategorien.
+Alle Videos liegen in einem Ordner, zuerst `~/Sportuebungen`. Unten auf der Seite lässt er sich mit **«Ordner wählen …»** ändern, z. B. auf einen Ordner in iCloud Drive. Neben jedem Video liegt eine `.json` mit Link, Account, Caption, Tags und Notiz.
 
-Neben jedem Video liegt eine `.json` mit Link, Account, Caption und Notiz. Die Ordner kannst du auch direkt im Finder umbenennen oder aufräumen.
+Ordner aus früheren Versionen (eine Kategorie pro Ordner) werden beim Start automatisch aufgelöst: Die Videos wandern in den Hauptordner, der Ordnername wird zum Tag.
 
 ## Wenn ein Download scheitert
 
