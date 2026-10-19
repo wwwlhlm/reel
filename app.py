@@ -179,27 +179,67 @@ def title_of(meta: dict, uploader: str) -> str:
 
 
 # ------------------------------------------------------------------- Download
+def base_opts() -> dict:
+    opts = {"quiet": True, "noprogress": True, "noplaylist": False}
+    if FFMPEG:
+        opts["ffmpeg_location"] = FFMPEG
+    browser = load_settings().get("cookies_browser")
+    if browser:
+        opts["cookiesfrombrowser"] = (browser,)
+    return opts
+
+
+def handle_of(info: dict) -> str:
+    """Instagram-Handle aus den yt-dlp-Infos (ohne @)."""
+    for key in ("channel", "uploader_id", "uploader"):
+        v = str(info.get(key) or "").strip().lstrip("@")
+        if v and not v.isdigit() and " " not in v:
+            return v
+    return str(info.get("uploader_id") or "")
+
+
+backfill = {"running": False, "done": False}
+
+
+def backfill_handles(root: Path):
+    """Für ältere Videos, bei denen nur die Account-Nummer gespeichert ist,
+    den Handle einmalig bei Instagram nachschlagen (ohne neuen Download)."""
+    try:
+        todo = [f for f in root.iterdir() if f.suffix.lower() in VIDEO_EXT
+                and str(read_meta(f).get("uploader", "")).isdigit() and read_meta(f).get("url")]
+        if todo:
+            with yt_dlp.YoutubeDL(base_opts()) as ydl:
+                for f in todo:
+                    try:
+                        info = ydl.extract_info(read_meta(f)["url"], download=False)
+                        e = (info.get("entries") or [info])[0] or info
+                        h = handle_of(e) or handle_of(info)
+                        if h and not h.isdigit():
+                            m = read_meta(f)
+                            m["uploader"] = h
+                            m.setdefault("uploader_name", e.get("uploader") or "")
+                            write_meta(f, m)
+                    except Exception as ex:
+                        print("Handle nachtragen fehlgeschlagen:", f.name, ex)
+    finally:
+        backfill.update(running=False, done=True)
+
+
 def run_job(job_id: str, url: str, tags: list, note: str):
     def update(**kw):
         with jobs_lock:
             jobs[job_id].update(kw)
 
     target = lib()
-    opts = {
-        "outtmpl": str(target / "%(upload_date)s_%(uploader_id)s_%(id)s.%(ext)s"),
+    opts = base_opts()
+    opts.update({
+        # «channel» ist bei Instagram der Handle, «uploader_id» nur eine Nummer
+        "outtmpl": str(target / "%(upload_date)s_%(channel,uploader_id)s_%(id)s.%(ext)s"),
         # Instagram liefert meist fertige MP4 mit Ton ("b"); sonst zusammenführen
         "format": "b/bv*+ba" if FFMPEG else "b",
         "merge_output_format": "mp4",
         "restrictfilenames": True,
-        "quiet": True,
-        "noprogress": True,
-        "noplaylist": False,
-    }
-    if FFMPEG:
-        opts["ffmpeg_location"] = FFMPEG
-    browser = load_settings().get("cookies_browser")
-    if browser:
-        opts["cookiesfrombrowser"] = (browser,)
+    })
 
     update(status="läuft")
     try:
@@ -216,7 +256,8 @@ def run_job(job_id: str, url: str, tags: list, note: str):
                     continue
                 write_meta(fp, {
                     "url": url,
-                    "uploader": e.get("uploader_id") or e.get("uploader") or info.get("uploader_id") or "",
+                    "uploader": handle_of(e) or handle_of(info),
+                    "uploader_name": e.get("uploader") or info.get("uploader") or "",
                     "caption": e.get("description") or info.get("description") or "",
                     "duration": e.get("duration"),
                     "tags": tags,
@@ -241,7 +282,10 @@ def api_library():
     root = lib()
     with lib_lock:
         migrate_folders(root)
-    videos, counts = [], {}
+        if not backfill["running"] and not backfill["done"]:
+            backfill["running"] = True
+            threading.Thread(target=backfill_handles, args=(root,), daemon=True).start()
+    videos, counts, accounts = [], {}, {}
     for f in root.iterdir():
         if f.suffix.lower() not in VIDEO_EXT or f.name.startswith("."):
             continue
@@ -250,10 +294,13 @@ def api_library():
         tags = clean_tags(m.get("tags"))
         for t in tags:
             counts[t] = counts.get(t, 0) + 1
+        if uploader:
+            accounts[uploader] = accounts.get(uploader, 0) + 1
         videos.append({
             "name": f.name,
             "title": title_of(m, uploader),
             "uploader": uploader,
+            "uploader_name": m.get("uploader_name", ""),
             "url": m.get("url", ""),
             "caption": m.get("caption", ""),
             "note": m.get("note", ""),
@@ -264,7 +311,8 @@ def api_library():
         })
     videos.sort(key=lambda v: v["mtime"], reverse=True)
     tags = sorted(counts.items(), key=lambda x: (-x[1], x[0].lower()))
-    return jsonify(videos=videos, tags=tags)
+    accs = sorted(accounts.items(), key=lambda x: (-x[1], x[0].lower()))
+    return jsonify(videos=videos, tags=tags, accounts=accs, backfilling=backfill["running"])
 
 
 @app.post("/api/download")
@@ -360,6 +408,7 @@ def api_choose_folder():
         s = load_settings()
         s["library"] = path
         save_settings(s)
+        backfill["done"] = False
     return jsonify(library=str(lib()), changed=bool(path))
 
 
@@ -434,6 +483,8 @@ nav.tags button sup{color:var(--muted);font-size:10px;margin-left:2px}
 nav.tags button.on{color:var(--tag);border-bottom-color:currentColor}
 nav.tags button:hover{border-bottom-color:var(--line)}
 nav.tags .search{margin-left:auto;width:200px;max-width:100%}
+nav.accs{padding-top:0;margin-top:-8px}
+.acclink{border:0;background:none;padding:0;color:var(--fg);text-decoration:underline;text-underline-offset:2px;font-size:var(--s);text-align:left}
 .hint{font-size:var(--s);color:var(--muted);padding-bottom:12px;min-height:1.4em}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:40px 28px}
@@ -494,6 +545,7 @@ footer b{color:var(--fg);font-weight:400}
     <button class="btn ghost" type="button" id="quit">Beenden</button>
   </header>
   <nav class="tags" id="tagnav" aria-label="Nach Tags filtern"></nav>
+  <nav class="tags accs" id="accnav" aria-label="Nach Account filtern"></nav>
   <div class="hint" id="hint"></div>
   <main class="grid" id="grid"></main>
   <footer>
@@ -528,7 +580,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const post=(u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
 const media=n=>'/media/'+encodeURIComponent(n);
 const dur=s=>s?`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`:'';
-let videos=[],tagList=[],active=[],q='',openName=null,poll=null;const seen=new Set();
+let videos=[],tagList=[],accList=[],acc=null,active=[],q='',openName=null,poll=null;const seen=new Set();
 
 // ---------- Chip-Eingabe für Tags ----------
 function tagInput(el,initial,onChange){
@@ -571,7 +623,9 @@ function tagInput(el,initial,onChange){
 // ---------- Übersicht ----------
 async function load(){
   const d=await (await fetch('/api/library')).json();
-  videos=d.videos;tagList=d.tags;render();
+  videos=d.videos;tagList=d.tags;accList=d.accounts||[];render();
+  // Account-Namen werden im Hintergrund nachgetragen – kurz danach neu laden
+  if(d.backfilling)setTimeout(()=>{if($('#view').hidden)load()},5000);
 }
 function render(){
   active=active.filter(t=>tagList.some(x=>x[0]===t));
@@ -580,11 +634,15 @@ function render(){
     tagList.map(([t,n])=>`<button type="button" class="${active.includes(t)?'on':''}" data-t="${esc(t)}" aria-pressed="${active.includes(t)}">${esc(t)}<sup>${n}</sup></button>`).join('')+
     `<input class="field search" id="search" placeholder="Suchen" aria-label="Suchen" value="${esc(q)}">`;
   $('#search').oninput=e=>{q=e.target.value.toLowerCase();drawGrid()};
-  $('#crumbtag').textContent=active.length?active.join(' + '):'Alle Videos';
+  if(acc&&!accList.some(x=>x[0]===acc))acc=null;
+  $('#accnav').innerHTML=accList.length>1?`<span class="lbl">Accounts</span>`+
+    accList.map(([a,n])=>`<button type="button" class="${a===acc?'on':''}" data-a="${esc(a)}" aria-pressed="${a===acc}">@${esc(a)}<sup>${n}</sup></button>`).join(''):'';
+  const parts=[...active];if(acc)parts.push('@'+acc);
+  $('#crumbtag').textContent=parts.length?parts.join(' + '):'Alle Videos';
   drawGrid();
 }
 function drawGrid(){
-  const list=videos.filter(v=>active.every(t=>v.tags.includes(t))&&(!q||[v.title,v.note,v.uploader,v.caption,v.tags.join(' ')].join(' ').toLowerCase().includes(q)));
+  const list=videos.filter(v=>active.every(t=>v.tags.includes(t))&&(!acc||v.uploader===acc)&&(!q||[v.title,v.note,v.uploader,v.caption,v.tags.join(' ')].join(' ').toLowerCase().includes(q)));
   $('#hint').textContent=active.length>1?`Zeigt Videos mit allen gewählten Tags · ${list.length} Treffer`:'';
   $('#grid').innerHTML=list.map(v=>`<button class="block" type="button" data-n="${esc(v.name)}">
       <div class="thumb"><video src="${media(v.name)}#t=0.5" muted playsinline loop preload="metadata"></video>${v.duration?`<span class="len">${dur(v.duration)}</span>`:''}</div>
@@ -596,6 +654,7 @@ $('#tagnav').addEventListener('click',e=>{
   if(!t)active=[];else active=active.includes(t)?active.filter(x=>x!==t):[...active,t];
   render();
 });
+$('#accnav').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;acc=b.dataset.a===acc?null:b.dataset.a;render()});
 $('#grid').addEventListener('click',e=>{const b=e.target.closest('.block');if(b)openView(b.dataset.n)});
 // Vorschau beim Darüberfahren abspielen
 $('#grid').addEventListener('mouseover',e=>{const v=e.target.closest('.block')?.querySelector('video');if(v)v.play().catch(()=>{})});
@@ -606,11 +665,14 @@ function openView(name){
   const v=videos.find(x=>x.name===name);if(!v)return;openName=name;
   $('#vtitle').textContent=v.title;
   const vid=$('#vvideo');vid.src=media(v.name);vid.play().catch(()=>{});
-  $('#vkv').innerHTML=`<dt>Account</dt><dd>@${esc(v.uploader)}</dd>`+
+  const n=videos.filter(x=>x.uploader===v.uploader).length;
+  $('#vkv').innerHTML=`<dt>Account</dt><dd>@${esc(v.uploader)}${v.uploader_name?` <span style="color:var(--muted)">${esc(v.uploader_name)}</span>`:''}`+
+      (n>1?`<br><button class="acclink" type="button" id="vacc">Alle ${n} Videos von @${esc(v.uploader)}</button>`:'')+`</dd>`+
     (v.url?`<dt>Original</dt><dd><a href="${esc(v.url)}" target="_blank" rel="noopener">Auf Instagram öffnen ↗</a></dd>`:'')+
     (v.added?`<dt>Hinzugefügt</dt><dd>${esc(v.added)}</dd>`:'')+
     `<dt>Datei</dt><dd style="font-family:var(--mono);font-size:12px">${esc(v.name)}</dd>`;
   tagInput($('#vtags'),v.tags,async t=>{v.tags=t;await post('/api/update',{name:v.name,tags:t});refreshTags()});
+  if($('#vacc'))$('#vacc').onclick=()=>{acc=v.uploader;active=[];closeView()};
   $('#vnote').value=v.note;
   let timer;$('#vnote').oninput=e=>{v.note=e.target.value;clearTimeout(timer);timer=setTimeout(()=>post('/api/update',{name:v.name,note:v.note}),400)};
   $('#vcap').textContent=v.caption;$('#vcapsec').hidden=!v.caption;

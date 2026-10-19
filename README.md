@@ -16,7 +16,7 @@ Läuft auf Macs mit Apple-Chip (M1 und neuer).
 Reel öffnen – die Oberfläche erscheint im Browser unter http://localhost:5055. Die App hat kein Dock-Symbol. Öffnest du sie nochmals, kommt einfach wieder der Tab.
 
 - **Hinzufügen** – Instagram-Link(s) einfügen, Tags dazu (Enter oder Komma trennt), «Hinzufügen»
-- **Filtern** – oben auf Tags klicken; mehrere Tags zeigen nur Videos, die alle davon haben
+- **Filtern** – oben auf Tags klicken; mehrere Tags zeigen nur Videos, die alle davon haben. Darunter lassen sich alle Videos eines Accounts anzeigen
 - **Blockansicht** – Klick auf ein Video: gross abspielen, Tags und Notiz ändern, im Finder zeigen, löschen (landet im Papierkorb)
 - **Beenden** – oben rechts
 
